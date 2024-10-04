@@ -10,6 +10,7 @@ CircuitPython module for interacting with the VL53L1X distance sensor.
 
 
 * Author(s): Carter Nelson
+* Contributions: J Fletcher
 
 Implementation Notes
 --------------------
@@ -34,23 +35,29 @@ from micropython import const
 __version__ = "0.0.0+auto.0"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_VL53L1X.git"
 
-_VL53L1X_I2C_SLAVE_DEVICE_ADDRESS = const(0x0001)
-_VL53L1X_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND = const(0x0008)
+_I2C_SLAVE_DEVICE_ADDRESS = const(0x0001)
+_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND = const(0x0008)
 _GPIO_HV_MUX__CTRL = const(0x0030)
 _GPIO__TIO_HV_STATUS = const(0x0031)
+SYSTEM__INTERRUPT_CONFIG_GPIO = const(0x0046)
 _PHASECAL_CONFIG__TIMEOUT_MACROP = const(0x004B)
 _RANGE_CONFIG__TIMEOUT_MACROP_A_HI = const(0x005E)
 _RANGE_CONFIG__VCSEL_PERIOD_A = const(0x0060)
 _RANGE_CONFIG__TIMEOUT_MACROP_B_HI = const(0x0061)
 _RANGE_CONFIG__VCSEL_PERIOD_B = const(0x0063)
 _RANGE_CONFIG__VALID_PHASE_HIGH = const(0x0069)
+_SYSTEM__GROUPED_PARAM_HOLD_0 = const(0x0071)
+SYSTEM__THRESH_HIGH = const(0x0072)
+SYSTEM__THRESH_LOW = const(0x0074)
 _SD_CONFIG__WOI_SD0 = const(0x0078)
 _SD_CONFIG__INITIAL_PHASE_SD0 = const(0x007A)
+_SYSTEM__GROUPED_PARAM_HOLD = const(0x0082)
 _SYSTEM__INTERRUPT_CLEAR = const(0x0086)
 _SYSTEM__MODE_START = const(0x0087)
-_VL53L1X_RESULT__RANGE_STATUS = const(0x0089)
-_VL53L1X_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0 = const(0x0096)
-_VL53L1X_IDENTIFICATION__MODEL_ID = const(0x010F)
+_RESULT__INTERRUPT_STATUS = const(0x0088)
+_RESULT__RANGE_STATUS = const(0x0089)
+_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0 = const(0x0096)
+_IDENTIFICATION__MODEL_ID = const(0x010F)
 
 TB_SHORT_DIST = {
     # ms: (MACROP_A_HI, MACROP_B_HI)
@@ -86,7 +93,9 @@ class VL53L1X:
         self._sensor_init()
         self._timing_budget = None
         self.timing_budget = 50
-
+      
+# TODO: Add enter and exit; eg. from i2c_device
+  
     def _sensor_init(self):
         # pylint: disable=line-too-long
         init_seq = bytes(
@@ -185,34 +194,55 @@ class VL53L1X:
             ]
         )
         self._write_register(0x002D, init_seq)
-        self.start_ranging()
+        self.timed_ranging()
         while not self.data_ready:
             time.sleep(0.01)
         self.clear_interrupt()
         self.stop_ranging()
-        self._write_register(_VL53L1X_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, b"\x09")
+        self._write_register(_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, b"\x09")
         self._write_register(0x0B, b"\x00")
 
     @property
     def model_info(self):
         """A 3 tuple of Model ID, Module Type, and Mask Revision."""
-        info = self._read_register(_VL53L1X_IDENTIFICATION__MODEL_ID, 3)
+        info = self._read_register(_IDENTIFICATION__MODEL_ID, 3)
         return (info[0], info[1], info[2])  # Model ID, Module Type, Mask Rev
 
     @property
     def distance(self):
         """The distance in units of centimeters."""
-        if self._read_register(_VL53L1X_RESULT__RANGE_STATUS)[0] != 0x09:
-            return None
+        if self._read_register(_RESULT__RANGE_STATUS)[0] < 0x09:
+            return 400 # Modified to return 400 cm by default, rather than 'None'
         dist = self._read_register(
-            _VL53L1X_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0, 2
+            _RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0, 2
         )
         dist = struct.unpack(">H", dist)[0]
-        return dist / 10
+        return dist // 10
 
-    def start_ranging(self):
-        """Starts ranging operation."""
+    @property
+    def range_status(self):
+        status = self._read_register(_RESULT__RANGE_STATUS)[0]
+        return status
+
+    @property
+    def int_status(self):
+        """Indicates whether a set threshold has been crossed."""
+        if self._read_register(_RESULT__INTERRUPT_STATUS)[0] == 0x01:
+            return True
+        else:
+            return False
+
+    def timed_ranging(self):
+        """Starts timed ranging operation."""
         self._write_register(_SYSTEM__MODE_START, b"\x40")
+
+    def bb_ranging(self):
+        """Starts back-to-back ranging operation."""
+        self._write_register(_SYSTEM__MODE_START, b"\x03")
+
+    def single_ranging(self):
+        """Single shot ranging operation."""
+        self._write_register(_SYSTEM__MODE_START, b"\x10")
 
     def stop_ranging(self):
         """Stops ranging operation."""
@@ -295,6 +325,46 @@ class VL53L1X:
             raise ValueError("Unsupported mode.")
         self.timing_budget = self._timing_budget
 
+    @property
+    def threshold_mode(self, thresh_low, thresh_high, window, no_target=0):
+        if no_target == 0:
+            self._write_register(SYSTEM__INTERRUPT_CONFIG_GPIO, window[0] & 0x07)
+        else:
+            self._write_register(SYSTEM__INTERRUPT_CONFIG_GPIO, window[0] & 0x07, 0x40)
+        self._write_register(SYSTEM__THRESH_HIGH)
+        self._write_register(SYSTEM__THRESH_LOW)
+
+    @property
+    def set_threshold_mode(self):
+#        self.value = mode
+#        if mode == 0:
+#            val = b"\x00"
+#        if mode == 1:
+#            val = b"\x02"
+#        if mode == 2:
+#            val = b"\x03"
+#        if mode == 20:
+#            val = b"\x20"
+        self._write_register(SYSTEM__INTERRUPT_CONFIG_GPIO, b"\x00")
+        status = self._read_register(SYSTEM__INTERRUPT_CONFIG_GPIO)
+        return status
+
+    def get_threshold_high(self):
+        status = self._read_register(SYSTEM__THRESH_HIGH, 2)
+        return status
+
+#    def set_threshold_high(self):
+#        self.value = val
+#        self._write_register(0x72, b"\x01\xF4")
+
+    def get_threshold_low(self):
+        status = self._read_register(SYSTEM__THRESH_LOW, 2)
+        return status
+
+    def set_threshold_low(self):
+#        self.value = val
+        self._write_register(0x74, b"\x06\xD6") # Set to 1750 mm, but this shouldn't be hard coded like this
+
     def _write_register(self, address, data, length=None):
         if length is None:
             length = len(data)
@@ -315,6 +385,6 @@ class VL53L1X:
         `example <examples.html#multiple-vl53l1x-on-same-i2c-bus>`_ for proper usage.
         """
         self._write_register(
-            _VL53L1X_I2C_SLAVE_DEVICE_ADDRESS, struct.pack(">B", new_address)
+            _I2C_SLAVE_DEVICE_ADDRESS, struct.pack(">B", new_address)
         )
         self.i2c_device = i2c_device.I2CDevice(self._i2c, new_address)
