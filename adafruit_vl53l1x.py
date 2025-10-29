@@ -370,7 +370,7 @@ class VL53L1X:
     def set_address(self, new_address):
         """
         Set a new I2C address to the instantaited object. This is only called when using
-        multiple VL53L0X sensors on the same I2C bus (SDA & SCL pins). See also the
+        multiple VL53L1X sensors on the same I2C bus (SDA & SCL pins). See also the
         `example <examples.html#multiple-vl53l1x-on-same-i2c-bus>`_ for proper usage.
         """
         self._write_register(_VL53L1X_I2C_SLAVE_DEVICE_ADDRESS, struct.pack(">B", new_address))
